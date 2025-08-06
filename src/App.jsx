@@ -1,144 +1,156 @@
 import { useEffect, useState } from "react";
 import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+} from "firebase/auth";
+import {
+  getFirestore,
   collection,
   addDoc,
   query,
+  where,
   onSnapshot,
-  orderBy,
-  updateDoc,
   doc,
   deleteDoc,
+  updateDoc,
+  orderBy,
 } from "firebase/firestore";
-import { auth, db, provider } from "./firebase";
-import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import app from "./firebase";
+
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
 
 export default function App() {
   const [usuario, setUsuario] = useState(null);
+  const [dados, setDados] = useState([]);
   const [descricao, setDescricao] = useState("");
   const [valor, setValor] = useState("");
-  const [categoria, setCategoria] = useState("");
-  const [tipo, setTipo] = useState("receita");
-  const [data, setData] = useState("");
-  const [transacoes, setTransacoes] = useState([]);
-  const [modoEdicao, setModoEdicao] = useState(false);
-  const [idEdicao, setIdEdicao] = useState("");
+  const [editandoId, setEditandoId] = useState(null);
+  const [filtroMes, setFiltroMes] = useState("");
+  const [filtroAno, setFiltroAno] = useState("");
   const [modalAberto, setModalAberto] = useState(false);
 
-  const [mesSelecionado, setMesSelecionado] = useState("");
-  const [anoSelecionado, setAnoSelecionado] = useState("");
-
-  // Novo estado para controle do modal de confirmação de exclusão
-  const [modalExcluirAberto, setModalExcluirAberto] = useState(false);
-  const [idExcluir, setIdExcluir] = useState(null);
-
   function loginComGoogle() {
-    signInWithPopup(auth, provider).catch((erro) => {
-      alert("Erro ao fazer login: " + erro.message);
-    });
+    signInWithPopup(auth, provider)
+      .then((result) => {
+        setUsuario(result.user);
+      })
+      .catch((error) => {
+        console.error("Erro ao logar:", error);
+      });
   }
 
   function logout() {
-    signOut(auth);
+    signOut(auth).then(() => setUsuario(null));
+  }
+
+  function trocarConta() {
+    logout();
+    setTimeout(() => {
+      loginComGoogle();
+    }, 1000); // Pequeno atraso evita problemas com o popup
+  }
+
+  function abrirModalParaAdicionar() {
+    setDescricao("");
+    setValor("");
+    setEditandoId(null);
+    setModalAberto(true);
+  }
+
+  function abrirModalParaEditar(dado) {
+    setDescricao(dado.descricao);
+    setValor(dado.valor);
+    setEditandoId(dado.id);
+    setModalAberto(true);
+  }
+
+  async function salvar(e) {
+    e.preventDefault();
+    if (!descricao || !valor) return;
+
+    const dadosRef = collection(db, "financeiro");
+
+    const dado = {
+      descricao,
+      valor,
+      uid: usuario.uid,
+      criadoEm: new Date(),
+    };
+
+    try {
+      if (editandoId) {
+        const docRef = doc(db, "financeiro", editandoId);
+        await updateDoc(docRef, dado);
+      } else {
+        await addDoc(dadosRef, dado);
+      }
+      setModalAberto(false);
+      setDescricao("");
+      setValor("");
+      setEditandoId(null);
+    } catch (error) {
+      console.error("Erro ao salvar:", error);
+    }
+  }
+
+  async function excluir(id) {
+    await deleteDoc(doc(db, "financeiro", id));
   }
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUsuario(user);
-    });
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const q = query(collection(db, "transacoes"), orderBy("data", "desc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const dados = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-      setTransacoes(dados);
     });
     return () => unsubscribe();
   }, []);
 
-  async function salvar(e) {
-    e.preventDefault();
-    if (!descricao || !valor || !categoria || !data) {
-      alert("Preencha todos os campos");
-      return;
-    }
+  useEffect(() => {
+    if (!usuario) return;
 
-    const novaTransacao = {
-      descricao,
-      valor: parseFloat(valor),
-      categoria,
-      tipo,
-      data,
-      uid: usuario.uid,
-    };
+    const dadosRef = collection(db, "financeiro");
 
-    if (modoEdicao) {
-      await updateDoc(doc(db, "transacoes", idEdicao), novaTransacao);
-      setModoEdicao(false);
-      setIdEdicao("");
-    } else {
-      await addDoc(collection(db, "transacoes"), novaTransacao);
-    }
+    const filtros = [
+      where("uid", "==", usuario.uid),
+      orderBy("criadoEm", "desc"),
+    ];
 
-    setDescricao("");
-    setValor("");
-    setCategoria("");
-    setTipo("receita");
-    setData("");
-    setModalAberto(false);
-  }
+    const q = query(dadosRef, ...filtros);
 
-  function confirmarExcluir(id) {
-    setIdExcluir(id);
-    setModalExcluirAberto(true);
-  }
-
-  async function excluir() {
-    if (idExcluir) {
-      await deleteDoc(doc(db, "transacoes", idExcluir));
-      setIdExcluir(null);
-      setModalExcluirAberto(false);
-    }
-  }
-
-  async function editar(transacao) {
-    setDescricao(transacao.descricao);
-    setValor(transacao.valor);
-    setCategoria(transacao.categoria);
-    setTipo(transacao.tipo);
-    setData(transacao.data);
-    setModoEdicao(true);
-    setIdEdicao(transacao.id);
-    setModalAberto(true);
-  }
-
-  const transacoesDoUsuario = transacoes
-    .filter((t) => t.uid === usuario?.uid)
-    .filter((t) => {
-      const dataTransacao = new Date(t.data);
-      const mes = dataTransacao.getMonth() + 1;
-      const ano = dataTransacao.getFullYear();
-      return (
-        (!mesSelecionado || Number(mesSelecionado) === mes) &&
-        (!anoSelecionado || Number(anoSelecionado) === ano)
-      );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const lista = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setDados(lista);
     });
 
-  const totalReceitas = transacoesDoUsuario
-    .filter((t) => t.tipo === "receita")
-    .reduce((soma, t) => soma + t.valor, 0);
-  const totalDespesas = transacoesDoUsuario
-    .filter((t) => t.tipo === "despesa")
-    .reduce((soma, t) => soma + t.valor, 0);
-  const saldo = totalReceitas - totalDespesas;
+    return () => unsubscribe();
+  }, [usuario]);
+
+  const dadosFiltrados = dados.filter((dado) => {
+    const data = dado.criadoEm?.toDate?.();
+    if (!data) return false;
+
+    const mes = data.getMonth() + 1;
+    const ano = data.getFullYear();
+
+    const filtroMesOk = filtroMes ? mes === parseInt(filtroMes) : true;
+    const filtroAnoOk = filtroAno ? ano === parseInt(filtroAno) : true;
+
+    return filtroMesOk && filtroAnoOk;
+  });
 
   if (!usuario) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-950 text-white">
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
         <button
           onClick={loginComGoogle}
-          className="bg-blue-700 hover:bg-blue-600 px-6 py-3 rounded shadow cursor-pointer"
+          className="bg-blue-600 px-6 py-3 rounded-xl text-lg hover:bg-blue-700 transition"
         >
           Entrar com Google
         </button>
@@ -147,107 +159,79 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white font-sans">
-      <div className="max-w-3xl mx-auto p-6">
-        <header className="flex justify-between items-center mb-6">
-          <h1 className="text-3xl font-bold">💸 Minhas Finanças</h1>
-          <div>
-            <span className="mr-4">{usuario.displayName}</span>
+    <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-start p-6">
+      <div className="w-full max-w-xl">
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-2xl font-bold">Minhas Finanças</h1>
+          <div className="space-x-2">
+            <button
+              onClick={abrirModalParaAdicionar}
+              className="bg-green-600 px-3 py-1 rounded hover:bg-green-700 transition"
+            >
+              Nova Transação
+            </button>
+            <button
+              onClick={trocarConta}
+              className="bg-yellow-600 px-3 py-1 rounded hover:bg-yellow-700 transition"
+            >
+              Alterar Conta
+            </button>
             <button
               onClick={logout}
-              className="text-red-400 hover:text-red-300 cursor-pointer transition-colors duration-200"
+              className="bg-red-600 px-3 py-1 rounded hover:bg-red-700 transition"
             >
               Sair
             </button>
           </div>
-        </header>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center mb-6">
-          <div className="bg-green-800 p-4 rounded shadow">
-            <h2 className="font-semibold">Receitas</h2>
-            <p className="text-lg">R$ {totalReceitas.toFixed(2)}</p>
-          </div>
-          <div className="bg-red-800 p-4 rounded shadow">
-            <h2 className="font-semibold">Despesas</h2>
-            <p className="text-lg">R$ {totalDespesas.toFixed(2)}</p>
-          </div>
-          <div className="bg-blue-800 p-4 rounded shadow">
-            <h2 className="font-semibold">Saldo</h2>
-            <p className="text-lg">R$ {saldo.toFixed(2)}</p>
-          </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 mb-4 justify-center">
+        <div className="flex gap-4 mb-4">
           <select
-            value={mesSelecionado}
-            onChange={(e) => setMesSelecionado(e.target.value)}
-            className="bg-gray-800 text-white border border-gray-700 rounded p-2"
+            value={filtroMes}
+            onChange={(e) => setFiltroMes(e.target.value)}
+            className="bg-gray-800 p-2 rounded"
           >
-            <option value="">Todos os Meses</option>
-            {Array.from({ length: 12 }, (_, i) => (
-              <option key={i + 1} value={i + 1}>
-                {new Date(0, i).toLocaleString("pt-BR", { month: "long" })}
+            <option value="">Mês</option>
+            {Array.from({ length: 12 }, (_, i) => i + 1).map((mes) => (
+              <option key={mes} value={mes}>
+                {mes.toString().padStart(2, "0")}
               </option>
             ))}
           </select>
-
           <select
-            value={anoSelecionado}
-            onChange={(e) => setAnoSelecionado(e.target.value)}
-            className="bg-gray-800 text-white border border-gray-700 rounded p-2"
+            value={filtroAno}
+            onChange={(e) => setFiltroAno(e.target.value)}
+            className="bg-gray-800 p-2 rounded"
           >
-            <option value="">Todos os Anos</option>
-            {[2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027, 2028, 2029, 2030].map(
-              (ano) => (
-                <option key={ano} value={ano}>
-                  {ano}
-                </option>
-              )
-            )}
+            <option value="">Ano</option>
+            {["2023", "2024", "2025"].map((ano) => (
+              <option key={ano} value={ano}>
+                {ano}
+              </option>
+            ))}
           </select>
-
-          <button
-            onClick={() => setModalAberto(true)}
-            className="ml-auto bg-green-700 hover:bg-green-600 px-4 py-2 rounded cursor-pointer transition-colors duration-200"
-          >
-            + Nova Transação
-          </button>
         </div>
 
         <ul className="space-y-3">
-          {transacoesDoUsuario.length === 0 && (
-            <li className="text-center text-gray-400">
-              Nenhuma transação encontrada.
-            </li>
-          )}
-          {transacoesDoUsuario.map((t) => (
+          {dadosFiltrados.map((dado) => (
             <li
-              key={t.id}
-              className={`p-4 rounded flex justify-between items-center transition-all duration-300 ${
-                t.tipo === "receita"
-                  ? "bg-green-900 hover:bg-green-800"
-                  : "bg-red-900 hover:bg-red-800"
-              }`}
+              key={dado.id}
+              className="bg-gray-800 p-4 rounded flex justify-between items-center"
             >
               <div>
-                <p className="font-bold">{t.descricao}</p>
-                <p className="text-sm text-gray-300">
-                  R$ {t.valor.toFixed(2)} | {t.categoria} |{" "}
-                  {new Date(t.data).toLocaleDateString()}
-                </p>
+                <p className="font-semibold">{dado.descricao}</p>
+                <p className="text-sm text-gray-400">R$ {dado.valor}</p>
               </div>
-              <div className="flex gap-3">
+              <div className="space-x-2">
                 <button
-                  onClick={() => editar(t)}
-                  className="text-blue-400 hover:text-blue-600 font-semibold cursor-pointer transition-colors duration-200"
-                  aria-label={`Editar transação ${t.descricao}`}
+                  onClick={() => abrirModalParaEditar(dado)}
+                  className="bg-blue-600 px-2 py-1 rounded hover:bg-blue-700"
                 >
                   Editar
                 </button>
                 <button
-                  onClick={() => confirmarExcluir(t.id)}
-                  className="text-red-400 hover:text-red-600 font-semibold cursor-pointer transition-colors duration-200"
-                  aria-label={`Excluir transação ${t.descricao}`}
+                  onClick={() => excluir(dado.id)}
+                  className="bg-red-600 px-2 py-1 rounded hover:bg-red-700"
                 >
                   Excluir
                 </button>
@@ -257,106 +241,45 @@ export default function App() {
         </ul>
       </div>
 
-      {/* MODAL DE ADICIONAR / EDITAR */}
       {modalAberto && (
-        <div className="fixed inset-0 bg-black/40 bg-opacity-30 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
           <form
             onSubmit={salvar}
-            className="bg-gray-800 p-6 rounded-lg w-full max-w-md shadow-lg space-y-4"
+            className="bg-gray-800 p-6 rounded-lg w-full max-w-sm"
           >
-            <h2 className="text-xl font-bold mb-2">
-              {modoEdicao ? "Editar Transação" : "Nova Transação"}
+            <h2 className="text-xl font-bold mb-4">
+              {editandoId ? "Editar Transação" : "Nova Transação"}
             </h2>
             <input
               type="text"
               placeholder="Descrição"
               value={descricao}
               onChange={(e) => setDescricao(e.target.value)}
-              className="w-full bg-gray-700 text-white p-2 rounded"
-              autoFocus
+              className="w-full p-2 mb-3 rounded bg-gray-700 text-white"
             />
             <input
               type="number"
               placeholder="Valor"
               value={valor}
               onChange={(e) => setValor(e.target.value)}
-              className="w-full bg-gray-700 text-white p-2 rounded"
-              step="0.01"
-              min="0"
+              className="w-full p-2 mb-3 rounded bg-gray-700 text-white"
             />
-            <input
-              type="text"
-              placeholder="Categoria"
-              value={categoria}
-              onChange={(e) => setCategoria(e.target.value)}
-              className="w-full bg-gray-700 text-white p-2 rounded"
-            />
-            <input
-              type="date"
-              value={data}
-              onChange={(e) => setData(e.target.value)}
-              className="w-full bg-gray-700 text-white p-2 rounded"
-            />
-            <select
-              value={tipo}
-              onChange={(e) => setTipo(e.target.value)}
-              className="w-full bg-gray-700 text-white p-2 rounded"
-            >
-              <option value="receita">Receita</option>
-              <option value="despesa">Despesa</option>
-            </select>
-            <div className="flex justify-between items-center pt-2">
-              <button
-                type="submit"
-                className="bg-green-700 hover:bg-green-600 text-white px-4 py-2 rounded cursor-pointer transition-colors duration-200"
-              >
-                {modoEdicao ? "Atualizar" : "Adicionar"}
-              </button>
+            <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setModalAberto(false);
-                  setModoEdicao(false);
-                  setDescricao("");
-                  setValor("");
-                  setCategoria("");
-                  setData("");
-                  setTipo("receita");
-                }}
-                className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded cursor-pointer transition-colors duration-200"
+                onClick={() => setModalAberto(false)}
+                className="px-3 py-1 bg-gray-600 rounded hover:bg-gray-700"
               >
                 Cancelar
+              </button>
+              <button
+                type="submit"
+                className="px-3 py-1 bg-green-600 rounded hover:bg-green-700"
+              >
+                Salvar
               </button>
             </div>
           </form>
-        </div>
-      )}
-
-      {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO */}
-      {modalExcluirAberto && (
-        <div className="fixed inset-0 bg-black/40 bg-opacity-40 flex items-center justify-center z-50">
-          <div className="bg-gray-800 p-6 rounded-lg max-w-sm w-full text-center shadow-lg">
-            <h3 className="text-lg font-semibold mb-4">
-              Confirmar exclusão
-            </h3>
-            <p className="mb-6">
-              Tem certeza que deseja excluir essa transação? Essa ação não pode ser desfeita.
-            </p>
-            <div className="flex justify-center gap-4">
-              <button
-                onClick={excluir}
-                className="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded transition-colors duration-200"
-              >
-                Excluir
-              </button>
-              <button
-                onClick={() => setModalExcluirAberto(false)}
-                className="bg-gray-700 hover:bg-gray-600 text-white px-5 py-2 rounded cursor-pointer transition-colors duration-200"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
         </div>
       )}
     </div>
